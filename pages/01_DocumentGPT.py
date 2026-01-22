@@ -1,15 +1,22 @@
 import streamlit as st
+from langchain.schema.runnable import RunnableLambda, RunnablePassthrough
+from langchain.prompts import ChatPromptTemplate
 from langchain.storage import LocalFileStore
 from langchain.document_loaders import UnstructuredFileLoader
 from langchain.document_loaders import UnstructuredFileLoader
 from langchain.text_splitter import CharacterTextSplitter
 from langchain.embeddings import OpenAIEmbeddings, CacheBackedEmbeddings
 from langchain.vectorstores import FAISS
+from langchain.chat_models import ChatOpenAI
 
 # 페이지 설정
 st.set_page_config(
     page_title = "DocumentGPT", 
     page_icon = "📃"
+)
+
+llm = ChatOpenAI(
+    temperature=0.1,
 )
 
 # Streamlit 캐싱: 같은 파일이면 재실행 시 embed_file 건너뜀
@@ -63,6 +70,26 @@ def paint_history():
         send_message(message["message"], message["role"], save = False)
 
 
+
+def format_docs(docs):
+    return "\n\n".join(doc.page_content for doc in docs)
+
+prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system", 
+            """
+            Answer the question using ONLY the following context. If you don't know the answer just say you don't know. DON'T make anything up.
+
+            Context: {context}
+            """,
+        ),
+        ("human", "{question}"),
+    ]
+)
+
+
+
 st.title("DocumentGPT")
 
 st.markdown(
@@ -91,7 +118,17 @@ if file:
     message = st.chat_input("Ask anything about your file....")
     if message:
         send_message(message, "human")
-        send_message("lalala", "ai")
+
+        chain = ({
+                "context": retriever | RunnableLambda(format_docs),  
+                "question": RunnablePassthrough()
+            } 
+            | prompt 
+            | llm
+        )
+        response = chain.invoke(message)
+        send_message(response.content, "ai")
+
 
 else:
     # 파일 없으면 대화 내역 초기화
