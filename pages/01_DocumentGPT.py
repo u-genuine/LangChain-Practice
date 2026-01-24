@@ -8,6 +8,7 @@ from langchain.text_splitter import CharacterTextSplitter
 from langchain.embeddings import OpenAIEmbeddings, CacheBackedEmbeddings
 from langchain.vectorstores import FAISS
 from langchain.chat_models import ChatOpenAI
+from langchain.callbacks.base import BaseCallbackHandler
 
 # 페이지 설정
 st.set_page_config(
@@ -15,8 +16,29 @@ st.set_page_config(
     page_icon = "📃"
 )
 
+# 스트리밍 응답을 위한 커스텀 콜백 핸들러
+class ChatCallbackHandler(BaseCallbackHandler):
+    """LLM 토큰 생성 시마다 실시간으로 화면에 표시"""
+    message = ""
+
+    def on_llm_start(self, *args, **kwargs):
+        """LLM 시작 시: 빈 공간(placeholder)생성"""
+        self.message_box = st.empty() # 나중에 업데이트할 빈 공간
+
+    def on_llm_end(self, *args, **kwargs):
+        """LLM 종료 시: 완성된 메시지를 session_state에 저장"""
+        save_message(self.message, "ai")
+
+    def on_llm_new_token(self, token, *args, **kwargs):
+        """새 토큰 생성될 때마다 호출됨"""
+        self.message += token # 누적
+        self.message_box.markdown(self.message) # 실시간 업데이트
+
+
 llm = ChatOpenAI(
     temperature=0.1,
+    streaming = True, # 스트리밍 활성화
+    callbacks = [ChatCallbackHandler()] # 커스텀 콜백 등록
 )
 
 # Streamlit 캐싱: 같은 파일이면 재실행 시 embed_file 건너뜀
@@ -54,24 +76,31 @@ def embed_file(file):
     return retriever
 
 
+def save_message(message, role):
+    """메시지를 session_state에 저장"""
+    st.session_state["messages"].append({"message": message, "role": role})
+
+
 
 def send_message(message, role, save = True):
-    """메시지를 화면에 표시하고 선택적으로 session_state에 저장"""
-    with st.chat_message(role):
+    """메시지를 화면에 표시하고 선택적으로 저장"""
+    # st.chat_message: 채팅 메시지 스타일 UI 생성 (아바타 + 말풍선)
+    with st.chat_message(role): 
         st.markdown(message)
     if save:
-        st.session_state["messages"].append({"message": message, "role": role})
+        save_message(message, role)
 
 
 
 def paint_history():
-    """저장된 대화 내역을 화면에 복원"""
+    """저장된 대화 내역 복원"""
     for message in st.session_state["messages"]:
         send_message(message["message"], message["role"], save = False)
 
 
 
 def format_docs(docs):
+    """문서 리스트를 하나의 텍스트로 변환"""
     return "\n\n".join(doc.page_content for doc in docs)
 
 prompt = ChatPromptTemplate.from_messages(
@@ -118,7 +147,6 @@ if file:
     message = st.chat_input("Ask anything about your file....")
     if message:
         send_message(message, "human")
-
         chain = ({
                 "context": retriever | RunnableLambda(format_docs),  
                 "question": RunnablePassthrough()
@@ -126,8 +154,11 @@ if file:
             | prompt 
             | llm
         )
-        response = chain.invoke(message)
-        send_message(response.content, "ai")
+
+        # AI 메시지 블록 안에서 invoke 실행
+        # → ChatCallbackHandler가 이 블록 안에서 실시간 출력
+        with st.chat_message("ai"): 
+            chain.invoke(message) 
 
 
 else:
