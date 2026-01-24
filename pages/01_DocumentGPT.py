@@ -9,6 +9,17 @@ from langchain.embeddings import OpenAIEmbeddings, CacheBackedEmbeddings
 from langchain.vectorstores import FAISS
 from langchain.chat_models import ChatOpenAI
 from langchain.callbacks.base import BaseCallbackHandler
+from langchain.memory import ConversationBufferMemory
+from langchain.prompts import MessagesPlaceholder
+
+# 초기화 - session_state에 memory 저장
+if "memory" not in st.session_state:
+    st.session_state["memory"] = ConversationBufferMemory(
+        return_messages=True,
+        memory_key="history"
+    )
+
+memory = st.session_state["memory"]
 
 # 페이지 설정
 st.set_page_config(
@@ -105,14 +116,14 @@ def format_docs(docs):
 
 prompt = ChatPromptTemplate.from_messages(
     [
-        (
-            "system", 
-            """
-            Answer the question using ONLY the following context. If you don't know the answer just say you don't know. DON'T make anything up.
+        ("system", 
+        """
+        Answer the question using ONLY the following context. If you don't know the answer just say you don't know. DON'T make anything up.
 
-            Context: {context}
-            """,
+        Context: {context}
+        """,
         ),
+        MessagesPlaceholder(variable_name="history"),
         ("human", "{question}"),
     ]
 )
@@ -147,9 +158,11 @@ if file:
     message = st.chat_input("Ask anything about your file....")
     if message:
         send_message(message, "human")
+
         chain = ({
                 "context": retriever | RunnableLambda(format_docs),  
-                "question": RunnablePassthrough()
+                "question": RunnablePassthrough(),
+                "history": lambda x: memory.load_memory_variables({})["history"]
             } 
             | prompt 
             | llm
@@ -158,9 +171,17 @@ if file:
         # AI 메시지 블록 안에서 invoke 실행
         # → ChatCallbackHandler가 이 블록 안에서 실시간 출력
         with st.chat_message("ai"): 
-            chain.invoke(message) 
+            response = chain.invoke(message) 
 
+            with st.expander("Memory Debug (기억 데이터 확인)"):
+                st.write(memory.load_memory_variables({}))
+        
+        memory.save_context(
+            {"input": message},
+            {"output": response.content}            
+        )
 
 else:
     # 파일 없으면 대화 내역 초기화
     st.session_state["messages"] = []
+    st.session_state["memory"].clear()
