@@ -36,6 +36,11 @@ with st.sidebar:
     (https://github.com/u-genuine/LangChain-Practice)
     """)
 
+if not openai_api_key:
+    st.info("Please add your OpenAI API Key in the siddbar to start chatting.")
+    st.stop()
+
+
 # 스트리밍 응답을 위한 커스텀 콜백 핸들러 클래스
 class ChatCallbackHandler(BaseCallbackHandler):
     message = ""
