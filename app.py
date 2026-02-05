@@ -111,7 +111,7 @@ def embed_file(file, api_key):
     if not os.path.exists(cache_embeddings_path):
         os.makedirs(cache_embeddings_path)
 
-    embeddings = OpenAIEmbeddings(openai_api_key = api_key)
+    embeddings = OpenAIEmbeddings(api_key = api_key)
     cache_dir = LocalFileStore(cache_embeddings_path)
     cached_embeddings = CacheBackedEmbeddings.from_bytes_store(
         embeddings, cache_dir
