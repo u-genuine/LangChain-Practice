@@ -81,7 +81,7 @@ def format_docs(docs):
 # Streamlit 캐싱: 같은 파일이면 재실행 시 embed_file 건너뜀
 # 파일 내용이 변경되면 자동으로 재실행
 @st.cache_data(show_spinner = "Embedding file...")
-def embed_file(file):
+def embed_file(file, api_key):
     """파일을 저장하고 임베딩하여 retriever 반환"""
     file_content = file.read()
 
@@ -111,7 +111,7 @@ def embed_file(file):
     if not os.path.exists(cache_embeddings_path):
         os.makedirs(cache_embeddings_path)
 
-    embeddings = OpenAIEmbeddings()
+    embeddings = OpenAIEmbeddings(openai_api_key = api_key)
     cache_dir = LocalFileStore(cache_embeddings_path)
     cached_embeddings = CacheBackedEmbeddings.from_bytes_store(
         embeddings, cache_dir
@@ -155,7 +155,7 @@ Upload your files on the sidebar.
 
 # 메인 로직
 if file:
-    retriever = embed_file(file)
+    retriever = embed_file(file, openai_api_key)
     send_message("I'm ready! Ask away!", "ai", save = False)
     paint_history() # 이전 대화 복원
 
