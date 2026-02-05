@@ -86,7 +86,7 @@ def embed_file(file):
     file_content = file.read()
 
     # 폴더가 없으면 생성
-    cache_dir_path = "./cache/files"
+    cache_dir_path = "./.cache/files"
     if not os.path.exists(cache_dir_path):
         os.makedirs(cache_dir_path)
 
@@ -107,7 +107,7 @@ def embed_file(file):
     loader = UnstructuredFileLoader(file_path)
     docs = loader.load_and_split(text_splitter=splitter)
 
-    cache_embeddings_path = f"/.cache/embeddings/{file.name}"
+    cache_embeddings_path = f"./.cache/embeddings/{file.name}"
     if not os.path.exists(cache_embeddings_path):
         os.makedirs(cache_embeddings_path)
 
