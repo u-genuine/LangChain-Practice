@@ -1,4 +1,5 @@
 import streamlit as st
+import os
 from langchain.schema.runnable import RunnableLambda, RunnablePassthrough
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.storage import LocalFileStore
@@ -83,7 +84,13 @@ def format_docs(docs):
 def embed_file(file):
     """파일을 저장하고 임베딩하여 retriever 반환"""
     file_content = file.read()
-    file_path = f"./.cache/files/{file.name}"
+
+    # 폴더가 없으면 생성
+    cache_dir_path = "./cache/files"
+    if not os.path.exists(cache_dir_path):
+        os.makedirs(cache_dir_path)
+
+    file_path = f"{cache_dir_path}/{file.name}"
 
     # 업로드된 파일을 로컬에 저장
     with open(file_path, "wb") as f: # write binary
@@ -100,8 +107,12 @@ def embed_file(file):
     loader = UnstructuredFileLoader(file_path)
     docs = loader.load_and_split(text_splitter=splitter)
 
+    cache_embeddings_path = f"/.cache/embeddings/{file.name}"
+    if not os.path.exists(cache_embeddings_path):
+        os.makedirs(cache_embeddings_path)
+
     embeddings = OpenAIEmbeddings()
-    cache_dir = LocalFileStore(f"./.cache/embeddings/{file.name}")
+    cache_dir = LocalFileStore(cache_embeddings_path)
     cached_embeddings = CacheBackedEmbeddings.from_bytes_store(
         embeddings, cache_dir
     )
