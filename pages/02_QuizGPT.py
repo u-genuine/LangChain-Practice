@@ -33,7 +33,7 @@ llm = ChatOpenAI(
     callbacks=[StreamingStdOutCallbackHandler()] # 터미널에 실시간 답변 출력
 )
 
-# Few-shot 프롬프팅
+# 문서에서 퀴즈 텍스트를 생성하는 프롬프트
 questions_prompt = ChatPromptTemplate.from_messages(
     [
         ("system", 
@@ -68,10 +68,11 @@ questions_prompt = ChatPromptTemplate.from_messages(
         ]
     )
 
-
+# 문서 포맷팅 -> 퀴즈 생성 체인
 questions_chain = {"context": format_docs} | questions_prompt | llm
 
-# Few-shot 프롬프팅
+# 텍스트를 JSON 구조로 변환하는 프롬프트
+# {{ }} 중괄호 두 번 사용은 LangChain 변수 치환 방지
 formatting_prompt = ChatPromptTemplate.from_messages(
     [
         (
@@ -147,6 +148,7 @@ formatting_prompt = ChatPromptTemplate.from_messages(
     ]
 )
 
+# 퀴즈 JSON 변환 체인
 formatting_chain = formatting_prompt | llm
 
 @st.cache_data(show_spinner = "Loading file...")
@@ -169,6 +171,24 @@ def split_file(file):
     docs = loader.load_and_split(text_splitter=splitter)
     return docs
 
+# 캐시 사용 이유:
+# 1. OpenAI API 호출 횟수 줄이기 위해
+# 2. 동일한 주제/파일에 대해 즉각적인 응답을 주기 위해
+@st.cache_data(show_spinner="Making quiz...")
+def run_quiz_chain(_docs, topic):
+    # _docs: docs는 해싱 제외
+    # topic: 대신 파일명이나 검색어가 바뀐지 보고 재실행 여부 결정
+    chain = {"context": questions_chain} | formatting_chain | output_parser
+    return chain.invoke(_docs)
+
+
+@st.cache_data(show_spinner="Searching Wikipedia...")
+def wiki_search(term):
+     # 한국어 위키피디아 검색 & 상위 5개 결과로 리트리버 설정
+    retriever = WikipediaRetriever(top_k_results=5, lang="ko")
+    docs = retriever.get_relevant_documents(term)
+    return docs
+
 
 # 사이드바 UI
 with st.sidebar:
@@ -189,10 +209,8 @@ with st.sidebar:
     else :
         topic = st.text_input("Search Wikipedia...")
         if topic:
-            # 한국어 위키피디아 검색 & 상위 5개 결과로 리트리버 설정
-            retriever = WikipediaRetriever(top_k_results=5, lang="ko")
-            with st.status("Searching wikipedia..."):
-                docs = retriever.get_relevant_documents(topic)
+            docs = wiki_search(topic)
+           
 
 
 
@@ -213,6 +231,8 @@ else:
     start = st.button("Generate Quiz")
 
     if start:  
-        chain = {"context": questions_chain} | formatting_chain | output_parser
-        response = chain.invoke(docs)
+        # topic이 있으면 topic을, 없으면 file.name을 캐시 구분 키값으로 사용
+        response = run_quiz_chain(docs, topic if topic else file.name)
+
+        # response는 파이썬 딕셔너리 형태
         st.write(response)
