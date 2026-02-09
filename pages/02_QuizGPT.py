@@ -1,3 +1,4 @@
+from regex import T
 import streamlit as st
 import json
 from langchain.retrievers import WikipediaRetriever
@@ -228,11 +229,18 @@ if not docs:
 
 
 else:
-    start = st.button("Generate Quiz")
-
-    if start:  
-        # topic이 있으면 topic을, 없으면 file.name을 캐시 구분 키값으로 사용
-        response = run_quiz_chain(docs, topic if topic else file.name)
-
-        # response는 파이썬 딕셔너리 형태
-        st.write(response)
+    # topic이 있으면 topic을, 없으면 file.name을 캐시 구분 키값으로 사용
+    response = run_quiz_chain(docs, topic if topic else file.name)
+    with st.form("questions_form"):
+        for question in response["questions"]:
+            st.write(question["question"])
+            value = st.radio(
+                "선택지를 고르세요.", 
+                [answer["answer"] for answer in question["answers"]], 
+                index=None
+                )
+            if {"answer": value, "correct": True} in question["answers"]:
+                st.success("Correct!")
+            elif value is not None:
+                st.error("Wrong")
+        button = st.form_submit_button()
