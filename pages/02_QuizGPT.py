@@ -145,6 +145,8 @@ with st.sidebar:
         topic = st.text_input("Search Wikipedia...")
         if topic:
             docs = wiki_search(topic)
+    
+    view_answer = st.toggle("정답 확인")
            
 
 
@@ -165,6 +167,7 @@ if not docs:
 else:
     # topic이 있으면 topic을, 없으면 file.name을 캐시 구분 키값으로 사용
     response = run_quiz_chain(docs, topic if topic else file.name)
+
     with st.form("questions_form"):
         for question in response["questions"]:
             st.write(question["question"])
@@ -172,9 +175,21 @@ else:
                 "선택지를 고르세요.", 
                 [answer["answer"] for answer in question["answers"]], 
                 index=None
-                )
-            if {"answer": value, "correct": True} in question["answers"]:
-                st.success("Correct!")
-            elif value is not None:
-                st.error("Wrong")
+            )
+            
+            # 해당 문제의 정답 데이터를 미리 변수에 할다 
+            correct_answer = None
+            for a in question["answers"]:
+                if a["correct"]:
+                    correct_answer = a["answer"]
+
+            # 사이드바의 '정답 확인' 토글이 활성화되면 정답 제공
+            if view_answer:
+                if {"answer": value, "correct": True} in question["answers"]:
+                    st.success("Correct!")
+                
+                # 오답인 경우 정답을 함께 출력
+                elif value is not None:
+                    st.error(f"Wrong! 정답: {correct_answer}")
+                        
         button = st.form_submit_button()
