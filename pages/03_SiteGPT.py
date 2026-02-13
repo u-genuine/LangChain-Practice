@@ -25,9 +25,6 @@ class ChatCallbackHandler(BaseCallbackHandler):
     def on_llm_start(self, *args, **kwargs):
         self.message_box = st.empty()
     
-    def on_llm_end(self, *args, **kwargs):
-        save_message(self.message, "ai")
-    
     def on_llm_new_token(self, token, *args, **kwaghs):
         self.message += token
         self.message_box.markdown(self.message)
@@ -192,6 +189,23 @@ st.set_page_config(
     page_icon="🖥️"
 )
 
+@st.cache_data(show_spinner="답변을 생성 중입니다...")
+def get_cached_answer(query, _retriever):
+    # Map-Rerank 체인
+    chain = (
+        {
+            # 질문과 관련된 문서들을 리트리버가 찾아옴
+            "docs": _retriever,
+            # 입력된 질문을 그대로 다음 함수로 전달
+            "question": RunnablePassthrough(),
+        } 
+        # Map-Rerank: 각 문서에서 답을 찾고 점수를 매겨 최적의 답변 선별
+        | RunnableLambda(get_answers) 
+        | RunnableLambda(choose_answer)
+    )
+
+    return chain.invoke(query)
+
 
 with st.sidebar:
     url = st.text_input("URL을 입력하세요", placeholder="https://example.com")
@@ -210,29 +224,17 @@ if not url:
         query = st.chat_input("Ask a question to the website.")
 
         if query:
-            # with chat_container:
             draw_message(query, "human")
-            
-            # Map-Rerank 체인
-            chain = (
-                {
-                    # 질문과 관련된 문서들을 리트리버가 찾아옴
-                    "docs": retriever,
-                    # 입력된 질문을 그대로 다음 함수로 전달
-                    "question": RunnablePassthrough(),
-                } 
-                # Map-Rerank: 각 문서에서 답을 찾고 점수를 매겨 최적의 답변 선별
-                | RunnableLambda(get_answers) 
-                | RunnableLambda(choose_answer)
-            )
 
             with st.chat_message("ai"):
-                result = chain.invoke(query)
+                result = get_cached_answer(query, retriever)
 
                 with st.expander("Memory Debug (기억 데이터 확인)"):
                     st.write(memory.load_memory_variables({}))
             
+            save_message(result.content.replace("$", "\$"), "ai")
             memory.save_context(
                 {"input": query},
                 {"output": result.content.replace("$", "\$")}
             )
+
