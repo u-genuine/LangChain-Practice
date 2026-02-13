@@ -5,11 +5,63 @@ from langchain.embeddings import OpenAIEmbeddings
 from langchain.schema.runnable import RunnablePassthrough, RunnableLambda
 from langchain.chat_models import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
+from langchain.memory import ConversationBufferMemory
+from langchain.callbacks.base import BaseCallbackHandler
 import streamlit as st
 
-llm = ChatOpenAI(
+if "memory" not in st.session_state:
+    st.session_state["memory"] = ConversationBufferMemory(
+        return_messages=True,
+        memory_key="history"
+    )
+memory = st.session_state["memory"]
+
+if "messages" not in st.session_state:
+    st.session_state["messages"] = []
+
+class ChatCallbackHandler(BaseCallbackHandler):
+    message = ""
+
+    def on_llm_start(self, *args, **kwargs):
+        self.message_box = st.empty()
+    
+    def on_llm_end(self, *args, **kwargs):
+        save_message(self.message, "ai")
+    
+    def on_llm_new_token(self, token, *args, **kwaghs):
+        self.message += token
+        self.message_box.markdown(self.message)
+    
+# Map 단계 LLM은 스트리밍 X
+silent_llm = ChatOpenAI(
     temperature=0.1
 )
+
+# 최종 답변에 사용할 LLM 스트리밍 O
+llm = ChatOpenAI(
+    temperature=0.1,
+    streaming = True,
+    callbacks = [ChatCallbackHandler()]
+)
+
+
+# 메시지를 session_state에 저장
+def save_message(message, role):
+    st.session_state["messages"].append(
+        {"message": message, "role": role}
+    )
+
+# 메시지를 화면에 표시
+def draw_message(message, role, save = True):
+    with st.chat_message(role):
+        st.markdown(message)
+    if save:
+        save_message(message ,role)
+
+def draw_history():
+    for message in st.session_state["messages"]:
+        draw_message(message["message"], message["role"], False)
+
 
 answers_prompt = ChatPromptTemplate.from_template("""
     주어진 context만을 이용해서 사용자의 질문에 답변하세요. 답변할 수 없다면, 지어내지 말고 모른다고 하세요. 
@@ -41,7 +93,7 @@ def get_answers(inputs):
     """
     docs = inputs['docs']
     question = inputs['question']
-    answers_chain = answers_prompt | llm
+    answers_chain = answers_prompt | silent_llm
 
     return {
         "question": question, 
@@ -144,7 +196,8 @@ st.set_page_config(
 with st.sidebar:
     url = st.text_input("URL을 입력하세요", placeholder="https://example.com")
 
-if url:
+if not url:
+    url = "https://deepmind.google/sitemap.xml"
     if ".xml" not in url:
         with st.sidebar:
             st.error("Sitemap URL을 입력해주세요")
@@ -152,21 +205,34 @@ if url:
         # 사이트 맵 로드 & 벡터스토어 빌드
         retriever = load_website(url) 
 
-        query = st.text_input("Ask a question to the website.")
+        draw_history()
+
+        query = st.chat_input("Ask a question to the website.")
 
         if query:
-            # Map-Reduce 체인
+            # with chat_container:
+            draw_message(query, "human")
+            
+            # Map-Rerank 체인
             chain = (
                 {
                     # 질문과 관련된 문서들을 리트리버가 찾아옴
                     "docs": retriever,
                     # 입력된 질문을 그대로 다음 함수로 전달
-                    "question": RunnablePassthrough()
+                    "question": RunnablePassthrough(),
                 } 
                 # Map-Rerank: 각 문서에서 답을 찾고 점수를 매겨 최적의 답변 선별
                 | RunnableLambda(get_answers) 
                 | RunnableLambda(choose_answer)
             )
 
-            result = chain.invoke(query)
-            st.write(result.content.replace("$", "\$"))
+            with st.chat_message("ai"):
+                result = chain.invoke(query)
+
+                with st.expander("Memory Debug (기억 데이터 확인)"):
+                    st.write(memory.load_memory_variables({}))
+            
+            memory.save_context(
+                {"input": query},
+                {"output": result.content.replace("$", "\$")}
+            )

@@ -28,7 +28,7 @@ def embed_file(file):
     
     # 저장된 파일 로드
     loader = UnstructuredFileLoader(file_path)
-    docs = split_file(file)
+    docs = loader.load_and_split(text_splitter=splitter)
 
     embeddings = OpenAIEmbeddings()
     cached_embeddings = CacheBackedEmbeddings.from_bytes_store(
