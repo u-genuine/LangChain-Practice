@@ -4,7 +4,7 @@ from langchain.vectorstores import FAISS
 from langchain.embeddings import OpenAIEmbeddings
 from langchain.schema.runnable import RunnablePassthrough, RunnableLambda
 from langchain.chat_models import ChatOpenAI
-from langchain.prompts import ChatPromptTemplate
+from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.memory import ConversationBufferMemory
 from langchain.callbacks.base import BaseCallbackHandler
 import streamlit as st
@@ -16,8 +16,14 @@ if "memory" not in st.session_state:
     )
 memory = st.session_state["memory"]
 
+# UI에 표시할 메시지 리스트 초기화
 if "messages" not in st.session_state:
     st.session_state["messages"] = []
+
+# 유사 질문 캐싱을 위한 리스트 초기화
+if "qa_cache" not in st.session_state:
+    st.session_state["qa_cache"] = []
+
 
 class ChatCallbackHandler(BaseCallbackHandler):
     message = ""
@@ -29,12 +35,13 @@ class ChatCallbackHandler(BaseCallbackHandler):
         self.message += token
         self.message_box.markdown(self.message)
     
-# Map 단계 LLM은 스트리밍 X
+
+# 스트리밍 비활성화 LLM
 silent_llm = ChatOpenAI(
     temperature=0.1
 )
 
-# 최종 답변에 사용할 LLM 스트리밍 O
+# 스트리밍 활성화 LLM
 llm = ChatOpenAI(
     temperature=0.1,
     streaming = True,
@@ -42,24 +49,24 @@ llm = ChatOpenAI(
 )
 
 
-# 메시지를 session_state에 저장
+# 대화 내용을 session_state에 저장
 def save_message(message, role):
-    st.session_state["messages"].append(
-        {"message": message, "role": role}
-    )
+    st.session_state["messages"].append({"message": message, "role": role})
 
-# 메시지를 화면에 표시
+# 화면에 말풍선을 그리고 필요시 저장
 def draw_message(message, role, save = True):
     with st.chat_message(role):
         st.markdown(message)
     if save:
         save_message(message ,role)
 
+# 기존 대화 내역을 화면에 복원
 def draw_history():
     for message in st.session_state["messages"]:
         draw_message(message["message"], message["role"], False)
 
 
+# [1단계] 각 문서 조각에서 답변ㅇㄹ 추출하기 위한 프롬프트
 answers_prompt = ChatPromptTemplate.from_template("""
     주어진 context만을 이용해서 사용자의 질문에 답변하세요. 답변할 수 없다면, 지어내지 말고 모른다고 하세요. 
 
@@ -106,19 +113,19 @@ def get_answers(inputs):
         ]
     }
 
+# [2단계] 추출된 답변들 중 최적의 답변을 고르기 위한 프롬프트
 choose_prompt = ChatPromptTemplate.from_messages([
     (
         "system", 
         """
-        먼저 생성된 Answers만을 사용하여 사용자의 질문에 답변하세요.
-
-        더 높은 점수를 가진 답변들을 사용하세요. (더 유용합니다)
-        
-        최신의 자료를 우선시하고, 출처도 링크의 형태로 남겨주세요.
+        Answers 중 가장 점수가 높고 최신인 정보를 사용하여 사용자의 질문에 답변하세요.
+        출처도 링크의 형태로 남겨주세요.
+        이전 대화 맥락이 있다면 이를 고려하여 자연스럽게 답변하세요
 
         Answers: {answers}
         """
     ),
+    MessagesPlaceholder(variable_name="history"),
     ("human", "{question}")
 ])
 
@@ -139,13 +146,14 @@ def choose_answer(inputs):
    
     return choose_chain.invoke({
         "answers": condenced,
+        "history": memory.load_memory_variables({})["history"],
         "question": question
     })
 
 # BeautifulSoup 객체: HTML 태그를 파이썬 객체처럼 다루게 해주는 도구
 def parse_page(soup):
     """
-    SitemapLoacer가 웹페이지를 읽어오면 BeaurifulSoup 객체를 생성해 이 함수로 전달
+    SitemapLoader가 수집한 HTML에서 불필요한 태그를 제거하는 필터
     soup은 soup.find() 같은 메서듣로 특정 태그를 찾거나 제거할 수 있는 상태
     """
     # 불필요한 UI 요소 제거
@@ -163,78 +171,119 @@ def parse_page(soup):
         .replace("\xa0", " ")
     )
 
-@st.cache_data(show_spinner="Loading website...")
+
+@st.cache_data(show_spinner="웹사이트 로딩 중...")
 def load_website(url):
+    """웹사이트 내용을 읽어 임베딩 후 검색 엔진 반환"""
     # 토큰 기반 텍스트 분할
     splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
         chunk_size=1000,
         chunk_overlap=200
     )
-
     loader = SitemapLoader(
         url,
         filter_urls=[r"^(.*\/research\/).*"], # 특정 경로(/research/)만 수집하도록 필터링
         parsing_function = parse_page # soup 처리 함수 적용
     )
-    
     loader.requests_per_second = 5 # 대상 서버 부하 방지를 위한 속도 제한
     docs = loader.load_and_split(text_splitter=splitter)
 
     # 벡터 저장소 생성: 텍스트를 숫자로 변환(Embedding)하여 FAISS에 저장
     vector_store = FAISS.from_documents(docs, OpenAIEmbeddings())
-    return vector_store.as_retriever() # 질문과 유사한 문서를 찾아주는 리트리버 반환
+    return vector_store.as_retriever() # 질문과 유사한 문서를 찾아주는 검색 엔진 반환
+
+@st.cache_data(show_spinner="답변 생성 중...")
+def get_cached_answer(query, _retriever):
+    """동일 질문 캐싱을 적용한 답변 생성 체인 실행"""
+    # Map-Rerank: 각 문서에서 답을 찾고 점수를 매겨 최적의 답변 선별
+    chain = (
+        {
+            "docs": _retriever, # 질문과 관련된 문서들을 검색 엔진이 찾아옴
+            "question": RunnablePassthrough(), # 입력된 질문을 그대로 다음 함수로 전달
+        } 
+        | RunnableLambda(get_answers) 
+        | RunnableLambda(choose_answer)
+    )
+    return chain.invoke(query)
+
+
+# 유사한 질문 판별하기 위한 프롬프트
+find_prompt = ChatPromptTemplate.from_messages([
+    ("system", """
+     당신은 유사한 질문을 판별하는 판독관입니다.
+     아래 제공된 이전 질문 리스트 중에서 사용자의 현재 질문과 의미상 동일하거나 매우 유사한 질문이 있는지 확인하세요.
+
+     - 유사한 질문이 있다면, 해당 질문에 대한 '답변 내용'만 정확히 출력하세요
+     - 유사한 질문이 없다면, 반드시 '없음'이라고만 대답하세요
+     
+     이전 질문 리스트: {cache_list}
+"""),
+    ("human", "{question}")
+])
+
+def find_similar_question(query):
+    """이전 질문 내역에서 의미상 비슷한 질문이 있는지 LLM에게 확인"""
+
+    cache_list = "\n".join([
+        f"질문: {item['query']} -> 답변: {item['answer']}" 
+        for item in st.session_state["qa_cache"]
+    ])
+
+    find_chain = find_prompt | silent_llm
+    response = find_chain.invoke({
+        "cache_list": cache_list,
+        "question": query
+    })
+
+    answer = response.content
+    if answer == "없음":
+        return None
+    return answer
+
 
 st.set_page_config(
     page_title="SiteGPT",
     page_icon="🖥️"
 )
 
-@st.cache_data(show_spinner="답변을 생성 중입니다...")
-def get_cached_answer(query, _retriever):
-    # Map-Rerank 체인
-    chain = (
-        {
-            # 질문과 관련된 문서들을 리트리버가 찾아옴
-            "docs": _retriever,
-            # 입력된 질문을 그대로 다음 함수로 전달
-            "question": RunnablePassthrough(),
-        } 
-        # Map-Rerank: 각 문서에서 답을 찾고 점수를 매겨 최적의 답변 선별
-        | RunnableLambda(get_answers) 
-        | RunnableLambda(choose_answer)
-    )
-
-    return chain.invoke(query)
-
-
 with st.sidebar:
     url = st.text_input("URL을 입력하세요", placeholder="https://example.com")
 
-if not url:
-    url = "https://deepmind.google/sitemap.xml"
-    if ".xml" not in url:
-        with st.sidebar:
-            st.error("Sitemap URL을 입력해주세요")
-    else:
-        # 사이트 맵 로드 & 벡터스토어 빌드
-        retriever = load_website(url) 
+if ".xml" not in url:
+    with st.sidebar:
+        st.error("Sitemap URL을 입력해주세요")
 
-        draw_history()
+else:
+    # 사이트 맵 로드 & 벡터스토어 빌드
+    retriever = load_website(url) 
+    draw_history()
 
-        query = st.chat_input("Ask a question to the website.")
+    query = st.chat_input("Ask a question to the website.")
 
-        if query:
-            draw_message(query, "human")
+    if query:
+        draw_message(query, "human")
 
+        # 유사 질문이 있는지 확인
+        similar_answer = find_similar_question(query)
+
+        if similar_answer:
+            # 비슷한 질문이 있었다면 저장된 답변 출력
+            draw_message(similar_answer, "ai")
+        
+        else:
+            # 새로운 질문이면 Map-Rerank 체인 실행
             with st.chat_message("ai"):
                 result = get_cached_answer(query, retriever)
-
-                with st.expander("Memory Debug (기억 데이터 확인)"):
-                    st.write(memory.load_memory_variables({}))
             
             save_message(result.content.replace("$", "\$"), "ai")
+            st.session_state["qa_cache"].append({
+                "query": query,
+                "answer": result.content.replace("$", "\$")
+            })
             memory.save_context(
                 {"input": query},
                 {"output": result.content.replace("$", "\$")}
             )
 
+        with st.expander("Memory Debug (기억 데이터 확인)"):
+            st.write(memory.load_memory_variables({}))
