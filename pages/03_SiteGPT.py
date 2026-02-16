@@ -66,7 +66,7 @@ def draw_history():
         draw_message(message["message"], message["role"], False)
 
 
-# [1단계] 각 문서 조각에서 답변ㅇㄹ 추출하기 위한 프롬프트
+# [1단계] 각 문서 조각에서 답변을 추출하기 위한 프롬프트
 answers_prompt = ChatPromptTemplate.from_template("""
     주어진 context만을 이용해서 사용자의 질문에 답변하세요. 답변할 수 없다면, 지어내지 말고 모른다고 하세요. 
 
