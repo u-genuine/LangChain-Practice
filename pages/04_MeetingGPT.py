@@ -4,19 +4,47 @@ import math
 import glob
 import openai
 from pydub import AudioSegment
-from utils import embed_file
 import os
 from langchain.chat_models import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
 from langchain.document_loaders import TextLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.schema import StrOutputParser
+from langchain.vectorstores import FAISS
+from langchain.embeddings import OpenAIEmbeddings, CacheBackedEmbeddings
+from langchain.storage import LocalFileStore
+from langchain.callbacks.base import BaseCallbackHandler
 
 llm = ChatOpenAI(
     temperature=0.1
 )
 
 has_transcript = os.path.exists("./.cache/podcast.txt")
+
+splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+    chunk_size = 800,
+    chunk_overlap = 100,
+)
+
+@st.cache_data()
+def embed_file(file_path):
+    # 파일별 임베딩 캐시 저장소
+    cache_dir = LocalFileStore(f"./.cache/embeddings/{file.name}")
+    
+    # 저장된 파일 로드
+    loader = TextLoader(file_path)
+    docs = loader.load_and_split(text_splitter=splitter)
+
+    embeddings = OpenAIEmbeddings()
+    cached_embeddings = CacheBackedEmbeddings.from_bytes_store(
+        embeddings, cache_dir
+    )
+
+    vectorstore = FAISS.from_documents(docs, cached_embeddings)
+    retriever = vectorstore.as_retriever()
+    return retriever
+
+
 
 @st.cache_data()
 def extract_audio_from_video(video_path):
@@ -65,12 +93,31 @@ def transcribe_chunks(chunk_folder, destination):
                 audio_file
             )
             text_file.write(transcript["text"])
+            
+class ChatCallbackHandler(BaseCallbackHandler):
+    message = ""
+
+    def on_llm_start(self, *args, **kwargs):
+        self.message_box = st.empty()
+    
+    def on_llm_new_token(self, token, *args, **kwaghs):
+        self.message += token
+        self.message_box.markdown(self.message)
+
+
+# 스트리밍 활성화 LLM
+streaming_llm = ChatOpenAI(
+    temperature=0.1,
+    streaming = True,
+    callbacks = [ChatCallbackHandler()]
+)
 
 
 st.set_page_config(
     page_title="MeetingGPT",
     page_icon="🗣️"
 )
+
 
 st.markdown(
     """
@@ -87,23 +134,28 @@ with st.sidebar:
 
 if video:
     chunk_folder = "./.cache/chunks"
+    video_path = f"./.cache/{video.name}"
+    audio_path = video_path.replace("mp4", "mp3")
+    transcript_path = video_path.replace("mp4", "txt")
 
-    with st.status("Loading video...") as status:
-        video_content = video.read()
-        video_path = f"./.cache/{video.name}"
-        audio_path = video_path.replace("mp4", "mp3")
-        transcript_path = video_path.replace("mp4", "txt")
-        with open(video_path, "wb") as f:
-            f.write(video_content)
+    with st.status("Video Processing Status...") as status:
+        if "processed" not in st.session_state:
+            video_content = video.read()
+            with open(video_path, "wb") as f:
+                f.write(video_content)
 
-        status.update(label="Extracting audio...")
-        extract_audio_from_video(video_path)
+            status.update(label="Extracting audio...")
+            extract_audio_from_video(video_path)
 
-        status.update(label="Cutting audio segments...")
-        cut_audio_in_chunks(audio_path, 10, chunk_folder)
+            status.update(label="Cutting audio segments...")
+            cut_audio_in_chunks(audio_path, 10, chunk_folder)
 
-        status.update(label="Transcribing audio...")
-        transcribe_chunks(chunk_folder, transcript_path)
+            status.update(label="Transcribing audio...")
+            transcribe_chunks(chunk_folder, transcript_path)
+
+            st.session_state["processed"] = True
+
+        status.update(label="All processed complete", state="complete")
 
     transcript_tab, summary_tab, qa_tab = st.tabs(
         [
@@ -124,12 +176,8 @@ if video:
             # 두 체인이 필요함. 하나는 문서를 요약하기 위한 것
             # 하나는 이전의 요약과 새 context로 새로운 요약을 위한 것
             loader = TextLoader(transcript_path)
-            spliiter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
-                chunk_size = 800,
-                chunk_overlap = 100,
-            )
-
-            docs = loader.load_and_split(text_splitter = spliiter)
+            
+            docs = loader.load_and_split(text_splitter = splitter)
             # st.write(docs)
 
             first_summary_prompt = ChatPromptTemplate.from_template(
@@ -169,3 +217,31 @@ if video:
                     })
                     st.write(summary)
             st.write(summary)
+    
+    with qa_tab:
+        retriever = embed_file(transcript_path)
+
+        query = st.text_input("Ask a question about video")
+
+        if query:
+            docs = retriever.invoke(query)
+
+            qa_prompt = ChatPromptTemplate.from_messages([
+                (
+                    "system", 
+                    """
+                    아래 주어진 내용(context)만을 이용해서 사용자의 질문에 답변하세요. 답변할 수 없다면, 지어내지 말고 모른다고 하세요.
+
+                    ---
+                    {context}
+                    """
+                ),
+                ("human", "{question}")
+            ])
+
+            qa_chain = qa_prompt | streaming_llm
+            
+            answer = qa_chain.invoke({
+                "context": docs,
+                "question": query
+            })
