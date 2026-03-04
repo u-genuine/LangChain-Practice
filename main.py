@@ -1,44 +1,61 @@
-from fastapi import Body, FastAPI, Form, Request
+from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
+from pinecone import Pinecone
+import os
+from dotenv import load_dotenv
+import openai
+from langchain_openai import OpenAIEmbeddings
+from langchain_pinecone import PineconeVectorStore
+
+load_dotenv(dotenv_path="./env/.env")
+openai.api_key = os.getenv('OPENAI_API_KEY')
+
+index_name = "recipes"
+
+# Pinecone 초기화 & 인덱스 연결
+pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+index = pc.Index(index_name)
+
+# OpenAI 임베딩 모델 초기화 (벡터 변환에 사용)
+embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+
+# Pinecone 벡터 스토어 연결 - 이미 저장된 인덱스 불러옴
+vector_store = PineconeVectorStore(index_name=index_name,embedding=embeddings)
 
 # FastAPI 앱 초기화 & OpenAPI 문서 설정
 # /docs 경로에서 Swagger UI로 확인 가능
 app = FastAPI(
-    title="Nicolacus Maximus Quote Giver",
-    description="Get a real quote said by Nicolas Maximus himself.",
+    title="ChefGPT. The best provider of Indian Recipes in the world.",
+    description="Give ChefGPT a couple of ingredients and it will give you recipes in return.",
     servers=[
         # Custom GPT Action에서 바라볼 서버 주소 (cloudflared 터널)
-        {"url": "https://hopefully-democrats-effective-virtually.trycloudflare.com"}
+        {"url": "https://cayman-roads-affiliate-here.trycloudflare.com"}
     ]
 )
 
-# 응답 스키마 정의 - OpenAPI 문서에 자동 반영되고 Custom GPT가 구조를 인식하는데 사용됨
-class Quote(BaseModel):
-    quote: str = Field(description="The quote that Nicolacus Maximus said.")
-    year: int = Field(description="The year when Nicolacus Maximus said the quote.")
+# 응답 스키마 - Pineconedㅔ서 꺼낸 Document 본문만 반환
+class Document(BaseModel):
+    page_content: str
 
-
-# GET /quote - 명언 1개를 반환하는 엔드포인트
-# Custom GPT가 이 엔드포인트를 호출해 명언 가져옴
+# GET /recipe - 재료를 받아 유사한 레시피 목록을 반환하는 엔드포인트
+# Custom GPT가 ingredient 쿼리 파라미터와 함께 이 엔드포인트를 호출함
 @app.get(
-    "/quote", 
-    summary="Returns a random quote by Nicolacus Maximus",
-    description="Upon receiving a GET request this endpoint will return a real quote said by Nicolacus Maximus himself.",
-    response_description="A Quote object that contains the quote said by Nicolacus Maximus and the date when the quote was said", # Quote Object를 만들기 위해 pydantic 사용
-    response_model=Quote,
+    "/recipes", 
+    summary="Returns a list of recipes.",
+    description="Upon receiving an ingredient, this endpoint will return a list of recipes that contain that ingredient.",
+    response_description="A Document object that contains the recipe and preparation instructions", # Quote Object를 만들기 위해 pydantic 사용
+    response_model=list[Document],
     openapi_extra={
         # False: 한 번 허용/항상 허용/거부 버튼 표시 (기본 값)
         # True: 항상 허용 없이 허용/거부만 제공 → 부작용 있는 작업에 사용
-        "x-openai-isConsequential": True 
+        "x-openai-isConsequential": False 
     }
 )
-def get_quote(request: Request):
-    print(request.headers)
-    return {
-        "quote": "Life is short so eat it all.",
-        "year": 1950
-    }
+def get_recipe(ingredient: str):
+    # 입력된 재료와 유사한 레시피를 벡터 유사도 검색으로 조회
+    docs = vector_store.similarity_search(ingredient)
+    return docs
 
 # 가짜 DB - code: username 매핑
 # 실제 서비스라면 DB에서 조회하고 JWT 등으로 토큰 발급
@@ -73,7 +90,7 @@ def handle_authorize(client_id: str, redirect_uri: str, state: str):
     """
 
 # POST /token - code를 access_token으로 교환
-# ChatGPT가 /authorizae에서 받은 code를 가지고 이 엔드포인트로 POST 요청을 보냄
+# ChatGPT가 /authorize에서 받은 code를 가지고 이 엔드포인트로 POST 요청을 보냄
 # 이후 ChatGPT → 우리 서버로 보내는 모든 요청엔 이 access_token이 Authorization 헤더에 담김
 @app.post(
     "/token",
