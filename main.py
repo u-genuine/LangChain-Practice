@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Form, Request
+from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from pinecone import Pinecone
@@ -26,30 +26,30 @@ vector_store = PineconeVectorStore(index_name=index_name,embedding=embeddings)
 # FastAPI 앱 초기화 & OpenAPI 문서 설정
 # /docs 경로에서 Swagger UI로 확인 가능
 app = FastAPI(
-    title="ChefGPT. The best provider of Indian Recipes in the world.",
-    description="Give ChefGPT a couple of ingredients and it will give you recipes in return.",
+    title="레시피 GPT. 당신만의 흑백요리사",
+    description="재료를 몇 가지 알려주시면 레시피를 추천해드립니다.",
     servers=[
-        # Custom GPT Action에서 바라볼 서버 주소 (cloudflared 터널)
-        {"url": "https://cayman-roads-affiliate-here.trycloudflare.com"}
+        # GPTs Actio이 API를 호출할 때 사용할 서버 주소 (cloudflared Tunnel URL)
+        {"url": "https://cycle-industries-kitty-apps.trycloudflare.com"}
     ]
 )
 
-# 응답 스키마 - Pineconedㅔ서 꺼낸 Document 본문만 반환
+# 응답 스키마 - Pinecone에서 꺼낸 Document 본문만 반환
 class Document(BaseModel):
     page_content: str
 
 # GET /recipe - 재료를 받아 유사한 레시피 목록을 반환하는 엔드포인트
-# Custom GPT가 ingredient 쿼리 파라미터와 함께 이 엔드포인트를 호출함
+# GPTs가 ingredient 쿼리 파라미터와 함께 이 엔드포인트를 호출
 @app.get(
     "/recipes", 
-    summary="Returns a list of recipes.",
-    description="Upon receiving an ingredient, this endpoint will return a list of recipes that contain that ingredient.",
-    response_description="A Document object that contains the recipe and preparation instructions", # Quote Object를 만들기 위해 pydantic 사용
-    response_model=list[Document],
+    summary="재료를 입력받아 레시피 목록을 반환합니다.",
+    description="재료를 쿼리 파라미터로 전달하면 해당 재료가 포함된 레시피 목록을 반환합니다.",
+    response_description="레시피 내용과 조리 방법이 담긴 Document 객체",
+    response_model=list[Document], # Document Object를 만들기 위해 pydantic 사용
     openapi_extra={
-        # False: 한 번 허용/항상 허용/거부 버튼 표시 (기본 값)
-        # True: 항상 허용 없이 허용/거부만 제공 → 부작용 있는 작업에 사용
-        "x-openai-isConsequential": False 
+        "x-openai-isConsequential": False
+            # False: 한 번 허용/항상 허용/거부 버튼 표시 (기본 값)
+            # True: 항상 허용 없이 허용/거부만 제공 → 부작용 있는 작업에 사용
     }
 )
 def get_recipe(ingredient: str):
