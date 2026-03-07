@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Form
+from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from pinecone import Pinecone
@@ -7,6 +7,9 @@ from dotenv import load_dotenv
 import openai
 from langchain_openai import OpenAIEmbeddings
 from langchain_pinecone import PineconeVectorStore
+from database import Session, User, Token
+import uuid
+import hashlib
 
 load_dotenv(dotenv_path="./env/.env")
 openai.api_key = os.getenv('OPENAI_API_KEY')
@@ -30,7 +33,7 @@ app = FastAPI(
     description="재료를 몇 가지 알려주시면 레시피를 추천해드립니다.",
     servers=[
         # GPTs Actio이 API를 호출할 때 사용할 서버 주소 (cloudflared Tunnel URL)
-        {"url": "https://cycle-industries-kitty-apps.trycloudflare.com"}
+        {"url": "https://that-success-mouth-publishers.trycloudflare.com"}
     ]
 )
 
@@ -52,19 +55,14 @@ class Document(BaseModel):
             # True: 항상 허용 없이 허용/거부만 제공 → 부작용 있는 작업에 사용
     }
 )
-def get_recipe(ingredient: str):
+def get_recipe(request: Request, ingredient: str):
+    print(request.headers)
     # 입력된 재료와 유사한 레시피를 벡터 유사도 검색으로 조회
     docs = vector_store.similarity_search(ingredient)
     return docs
 
-# 가짜 DB - code: username 매핑
-# 실제 서비스라면 DB에서 조회하고 JWT 등으로 토큰 발급
-user_token_db = {
-    "ABCDEF": "nico"
-}
-
 # GET /autorizae - OAuth 로그인 페이지 반환
-# ChatGPT가 사용자를 이 페이지로 리다이렉트시킴
+# ChatGPT가 사용자를 이 페이지로 redirect
 # include_in_schema=False → Swagger UI & OpenAPI 스펙에서 숨김 (GPT Action에 노출 불필요)
 @app.get(
     "/authorize",
@@ -78,26 +76,70 @@ def handle_authorize(client_id: str, redirect_uri: str, state: str):
     print(client_id, redirect_uri, state)
     return f"""
     <html>
-        <head>
-            <title>Nicolacus Maximus Log In</title>
-        </head>
         <body>
-            <h1>Log Into Nicolacus Maximus</h1>
-            <!-- 클릭 시 ChatGPT로 code와 state를 담아 리다이렉트 -->
-            <a href="{redirect_uri}?code=ABCDEF&state={state}">Authorize Nicolacus Maximus GPT</a>
+            <h1>레시피 GPT 로그인</h1>
+            <form action="/login?redirect_uri={redirect_uri}&state={state}" method="post">
+                <input type="text" name="username" placeholder="ID" /><br/>
+                <input type="password" name="password" placeholder="PW" /><br/>
+                <button type="submit">로그인</button>
+            </form>
         </body>
     </html>
     """
 
+@app.post("/login", response_class=HTMLResponse, include_in_schema=False)
+def handle_login(
+    redirect_uri: str,
+    state: str,
+    username: str = Form(...),
+    password: str = Form(...)
+):
+    hashed_pw = hashlib.sha256(password.encode()).hexdigest()
+
+    with Session() as session:
+        user = session.query(User).filter(
+            User.username == username,
+            User.password == hashed_pw
+        ).first()
+
+        if not user:
+            return "<h1>아이디 또는 비밀번호가 일치하지 않습니다</h1>"
+        
+        # code 발급 후 tokens 테이블에 저장
+        code = str(uuid.uuid4())
+        token = Token(code=code, access_token=None, username=username)
+        session.add(token)
+        session.commit()
+
+    return f"""
+    <html>
+        <meta http-equiv="refresh" content="0;url={redirect_uri}?code={code}&state={state}" />
+    </html>
+"""
+
 # POST /token - code를 access_token으로 교환
 # ChatGPT가 /authorize에서 받은 code를 가지고 이 엔드포인트로 POST 요청을 보냄
 # 이후 ChatGPT → 우리 서버로 보내는 모든 요청엔 이 access_token이 Authorization 헤더에 담김
-@app.post(
-    "/token",
-    include_in_schema=False
-)
+@app.post("/token", include_in_schema=False)
 def handle_token(code = Form(...)): 
-    print(code)
-    return {
-        "access_token": user_token_db[code] # code로 사용자 조회 후 토큰 반환
-    }
+    with Session() as session:
+        token = session.query(Token).filter(Token.code == code).first()
+
+        if not token:
+            raise HTTPException(status_code=400, detail="Invalid code")
+
+        # access_token 발급 후 DB 업데이트
+        access_token = str(uuid.uuid4())
+        token.access_token = access_token
+        session.commit()
+
+        return {"access_token": access_token}
+
+# Todo
+# 유저들이 인증하도록 DB 구축 (O)
+# 유저들이 각자 마음에 드는 레시피를 따로 표시할 수 있도록
+# 좋아하는 레시피 즐겨찾기
+# 즐겨찾기 레시피 리스트를 가져올 수 있도록
+# 유저의 레시피를 저장할 url 만들어야 함 GPT에도 액션 추가
+# 특정 유저의 레시피를 나열해 줄 또 다른 url, endpoint 추가
+# 링크 초대된 사람만 볼 수 있도록 배포해서 공유
