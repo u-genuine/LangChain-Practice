@@ -1,8 +1,8 @@
 from sqlalchemy import ForeignKey, create_engine, Column, String
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-# DB 연결 URL - postgresql://유저명@호스트/DB명
-DATABASE_URL = "postgresql://yujin@localhost/recipe_gpt"
+# DB 연결
+DATABASE_URL = "mysql+pymysql://root:root@localhost/recipe_gpt"
 
 # DB 연결 정보를 담고 연결을 관리하는 객체
 # application.yml의 spring.datasource.url과 같은 역할
@@ -22,7 +22,6 @@ class User(Base):
     __tablename__ = "users"
     username = Column(String(50), primary_key=True)
     password = Column(String(255))
-    code = Column(String(255), nullable=True) # 로그인 시 발급되는 일회용 코드
     
 # tokens 테이블 = code, access_token, username 매핑
 # 일회용이 아닌거로 일단 구현
@@ -30,7 +29,7 @@ class Token(Base):
     __tablename__ = "tokens"
     code = Column(String(255), primary_key=True)
     access_token = Column(String(255), nullable=True) # /token 호출 시 발급
-    username = Column(String(), ForeignKey("users.username")) # 어떤 유저의 토큰인지
+    username = Column(String(50), ForeignKey("users.username")) # 어떤 유저의 토큰인지
 
 # 정의된 테이블이 DB에 없으면 자동으로 생성
 # 이미 존재하는 테이블은 건들지 않음

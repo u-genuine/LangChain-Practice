@@ -33,7 +33,7 @@ app = FastAPI(
     description="재료를 몇 가지 알려주시면 레시피를 추천해드립니다.",
     servers=[
         # GPTs Actio이 API를 호출할 때 사용할 서버 주소 (cloudflared Tunnel URL)
-        {"url": "https://that-success-mouth-publishers.trycloudflare.com"}
+        {"url": "https://collectibles-adware-suited-senator.trycloudflare.com"}
     ]
 )
 
